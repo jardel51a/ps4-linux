@@ -5,6 +5,7 @@
  * Copyright 2011-2020 NXP
  */
 
+#include <linux/delay.h>
 #include <linux/suspend.h>
 #include <net/sock.h>
 
@@ -532,9 +533,11 @@ static void mwifiex_terminate_workqueue(struct mwifiex_adapter *adapter)
  *      - Download the correct firmware to card
  *      - Issue the init commands to firmware
  */
+#define MWIFIEX_FW_DNLD_TRIES	3
+
 static int _mwifiex_fw_dpc(const struct firmware *firmware, void *context)
 {
-	int ret;
+	int ret, attempt;
 	char fmt[64];
 	struct mwifiex_adapter *adapter = context;
 	struct mwifiex_fw_image fw;
@@ -553,14 +556,30 @@ static int _mwifiex_fw_dpc(const struct firmware *firmware, void *context)
 	fw.fw_buf = (u8 *) adapter->firmware->data;
 	fw.fw_len = adapter->firmware->size;
 
-	if (adapter->if_ops.dnld_fw) {
-		ret = adapter->if_ops.dnld_fw(adapter, &fw);
-	} else {
-		ret = mwifiex_dnld_fw(adapter, &fw);
+	/*
+	 * After a card reset the chip can be slow to come back, so retry the
+	 * download a few times before giving up on the device.
+	 */
+	for (attempt = 1; attempt <= MWIFIEX_FW_DNLD_TRIES; attempt++) {
+		if (adapter->if_ops.dnld_fw)
+			ret = adapter->if_ops.dnld_fw(adapter, &fw);
+		else
+			ret = mwifiex_dnld_fw(adapter, &fw);
+		if (ret != -1)
+			break;
+		mwifiex_dbg(adapter, ERROR,
+			    "FW download attempt %d/%d failed\n",
+			    attempt, MWIFIEX_FW_DNLD_TRIES);
+		if (attempt < MWIFIEX_FW_DNLD_TRIES)
+			msleep(500 * attempt);
 	}
 
-	if (ret == -1)
+	if (ret == -1) {
+		mwifiex_dbg(adapter, ERROR,
+			    "giving up: FW download failed %d times\n",
+			    MWIFIEX_FW_DNLD_TRIES);
 		goto err_dnld_fw;
+	}
 
 	mwifiex_dbg(adapter, MSG, "WLAN FW is active\n");
 
